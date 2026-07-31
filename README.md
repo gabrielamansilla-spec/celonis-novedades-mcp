@@ -3,7 +3,7 @@
 Servidor MCP custom que conecta Claude Code con los datos de gestión de novedades de Celonis.
 Permite a team leaders consultar excepciones, ausentismo, jornadas, horas extra y más en lenguaje natural.
 
-**Contacto:** gabriela.mansilla@mercadolibre.com
+**Contacto:** processmining@mercadolibre.com
 
 ## Instalación
 
