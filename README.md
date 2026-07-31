@@ -7,7 +7,11 @@ Permite a team leaders consultar excepciones, ausentismo, jornadas, horas extra 
 
 ## Instalación
 
-Pedile el `install.py` a Gabriela y ejecutá:
+Hay dos instaladores según tu situación:
+
+### Opción A — `install.py` (requiere internet)
+
+Descarga el servidor directamente desde este repositorio al momento de instalar.
 
 ```bash
 # Windows
@@ -16,6 +20,31 @@ python install.py
 # Mac / Linux
 python3 install.py
 ```
+
+### Opción B — `install-standalone.py` (sin conexión a internet)
+
+Todo embebido: no necesita descargar nada durante la instalación.
+Ideal si tenés restricciones de red o preferís un instalador autónomo.
+
+```bash
+# Windows
+python install-standalone.py
+
+# Mac / Linux
+python3 install-standalone.py
+```
+
+### Requisitos
+
+- Python 3.7 o superior
+- Claude Code **o** Claude Desktop instalado
+- Acceso a la red/VPN de MELI (para que el MCP pueda conectarse a Celonis en runtime)
+
+> **¿Sin `claude` en la terminal?** Si solo tenés Claude Desktop (sin el CLI), el instalador
+> configura el servidor editando directamente los archivos de configuración de Claude.
+> No es necesario tener el comando `claude` disponible en la terminal.
+
+Después de instalar, **abrí una nueva sesión de Claude Code** — las sesiones ya abiertas no cargan los tools nuevos.
 
 ## Tools disponibles
 
