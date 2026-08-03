@@ -9,7 +9,7 @@ import os
 import time
 import urllib.request
 import urllib.parse
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime
 
 CLIENT_ID = os.environ["CELONIS_CLIENT_ID"]
 CLIENT_SECRET = os.environ["CELONIS_CLIENT_SECRET"]
@@ -162,6 +162,62 @@ ANALYSIS_GUIDANCE = (
 )
 
 
+def parse_dt(val):
+    """Parse datetime from ISO string or millisecond epoch. Returns datetime or None."""
+    if not val:
+        return None
+    if isinstance(val, (int, float)):
+        try:
+            return datetime.utcfromtimestamp(val / 1000)
+        except Exception:
+            return None
+    if isinstance(val, str):
+        s = val.strip().rstrip("Zz")
+        for fmt, length in [
+            ("%Y-%m-%dT%H:%M:%S", 19),
+            ("%Y-%m-%d %H:%M:%S", 19),
+            ("%Y-%m-%dT%H:%M", 16),
+            ("%Y-%m-%d %H:%M", 16),
+            ("%Y-%m-%d", 10),
+        ]:
+            try:
+                return datetime.strptime(s[:length], fmt)
+            except ValueError:
+                continue
+    return None
+
+
+def get_iso_week(date_val):
+    """Returns ISO year-week string (e.g. '2025-W03') from a date string, date, or datetime."""
+    try:
+        if isinstance(date_val, str):
+            d = date.fromisoformat(str(date_val)[:10])
+        elif isinstance(date_val, datetime):
+            d = date_val.date()
+        elif isinstance(date_val, date):
+            d = date_val
+        else:
+            return None
+        iso_year, iso_week, _ = d.isocalendar()
+        return f"{iso_year}-W{iso_week:02d}"
+    except Exception:
+        return None
+
+
+def build_site_type_filter(site_type):
+    """Returns a string_filter for site type prefix (e.g., 'SC', 'FBM', 'XD')."""
+    if not site_type or not site_type.strip():
+        return None
+    prefix = site_type.strip().upper()
+    return {
+        "column_id": "O_CUSTOM_EMPLOYEE.LOCACIONDESCRIPTION",
+        "values": [f"{prefix} - "],
+        "add_wildcard_before": False,
+        "add_wildcard_after": True,
+        "case_sensitive": False,
+    }
+
+
 def build_status_filter(status):
     """Returns a string_filter for employment status, or None if 'all'."""
     if not status or status.strip().lower() == "all":
@@ -180,6 +236,12 @@ _SITE_DESCRIPTION = (
     "e.g. 'Tultitlan', 'MXCD14'). Use list_sites to see valid values."
 )
 
+_SITE_TYPE_DESCRIPTION = (
+    "Optional site type filter by prefix: 'SC' (Service Centers), 'FBM' (Fulfillment), "
+    "'XD' (Cross-Docking), etc. Matches sites whose description starts with 'TYPE - '. "
+    "Use list_sites to discover valid types."
+)
+
 _STATUS_DESCRIPTION = (
     "Employment status filter. Default: 'Active' (only active employees). "
     "Use 'Terminated' for former employees, or 'all' to include everyone."
@@ -189,6 +251,18 @@ _STATUS_DESCRIPTION = (
 # ── Tool definitions ──────────────────────────────────────────────────────────
 
 TOOLS = [
+    {
+        "name": "start_consultation",
+        "description": (
+            "Entry point for any Celonis consultation — call this first. "
+            "Fetches available site types and returns a guided workflow so Claude asks the user: "
+            "(1) which site type, specific site, or all; "
+            "(2) a specific supervisor or pending exceptions first; "
+            "(3) employee status (Active/Terminated/all). "
+            "Filtering by site_type or site in every subsequent call significantly reduces Celonis query time."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
     {
         "name": "compare_supervisors",
         "description": (
@@ -211,6 +285,7 @@ TOOLS = [
                 "start_date": {"type": "string", "description": "Custom start date YYYY-MM-DD."},
                 "end_date": {"type": "string", "description": "Custom end date YYYY-MM-DD."},
                 "site": {"type": "string", "description": _SITE_DESCRIPTION},
+                "site_type": {"type": "string", "description": _SITE_TYPE_DESCRIPTION},
                 "sort_by": {
                     "type": "string",
                     "default": "total_absences",
@@ -267,6 +342,7 @@ TOOLS = [
                 "start_date": {"type": "string", "description": "Custom start date YYYY-MM-DD."},
                 "end_date": {"type": "string", "description": "Custom end date YYYY-MM-DD."},
                 "site": {"type": "string", "description": _SITE_DESCRIPTION},
+                "site_type": {"type": "string", "description": _SITE_TYPE_DESCRIPTION},
                 "employee_status": {"type": "string", "description": "Ask the user before calling: 'Active' (Activos), 'Terminated' (Cesantes), or 'all' (Todos). Do not default — always confirm."},
             },
             "required": ["supervisor_name"],
@@ -305,6 +381,7 @@ TOOLS = [
                     "description": "Custom end date YYYY-MM-DD (inclusive). Use with start_date.",
                 },
                 "site": {"type": "string", "description": _SITE_DESCRIPTION},
+                "site_type": {"type": "string", "description": _SITE_TYPE_DESCRIPTION},
                 "employee_status": {"type": "string", "description": "Ask the user before calling: 'Active' (Activos), 'Terminated' (Cesantes), or 'all' (Todos). Do not default — always confirm."},
                 "page": {"type": "integer", "default": 0, "description": "Page number (0-based)."},
                 "page_size": {"type": "integer", "default": 50, "description": "Rows per page (max 100)."},
@@ -352,6 +429,7 @@ TOOLS = [
                     "description": "Custom end date YYYY-MM-DD. Use with start_date.",
                 },
                 "site": {"type": "string", "description": _SITE_DESCRIPTION},
+                "site_type": {"type": "string", "description": _SITE_TYPE_DESCRIPTION},
             },
             "required": ["supervisor_name"],
         },
@@ -381,6 +459,7 @@ TOOLS = [
                 "start_date": {"type": "string", "description": "Custom start date YYYY-MM-DD."},
                 "end_date": {"type": "string", "description": "Custom end date YYYY-MM-DD."},
                 "site": {"type": "string", "description": _SITE_DESCRIPTION},
+                "site_type": {"type": "string", "description": _SITE_TYPE_DESCRIPTION},
                 "employee_status": {"type": "string", "description": "Ask the user before calling: 'Active' (Activos), 'Terminated' (Cesantes), or 'all' (Todos). Do not default — always confirm."},
                 "page": {"type": "integer", "default": 0},
                 "page_size": {"type": "integer", "default": 50},
@@ -413,6 +492,7 @@ TOOLS = [
                 "start_date": {"type": "string", "description": "Custom start date YYYY-MM-DD."},
                 "end_date": {"type": "string", "description": "Custom end date YYYY-MM-DD."},
                 "site": {"type": "string", "description": _SITE_DESCRIPTION},
+                "site_type": {"type": "string", "description": _SITE_TYPE_DESCRIPTION},
                 "employee_status": {"type": "string", "description": "Ask the user before calling: 'Active' (Activos), 'Terminated' (Cesantes), or 'all' (Todos). Do not default — always confirm."},
             },
             "required": ["supervisor_name"],
@@ -467,6 +547,8 @@ TOOLS = [
                 },
                 "start_date": {"type": "string", "description": "Custom start date YYYY-MM-DD."},
                 "end_date": {"type": "string", "description": "Custom end date YYYY-MM-DD."},
+                "site": {"type": "string", "description": _SITE_DESCRIPTION},
+                "site_type": {"type": "string", "description": _SITE_TYPE_DESCRIPTION},
                 "page": {"type": "integer", "default": 0},
                 "page_size": {"type": "integer", "default": 50, "description": "Max 100."},
             },
@@ -498,6 +580,7 @@ TOOLS = [
                 "start_date": {"type": "string", "description": "Custom start date YYYY-MM-DD."},
                 "end_date": {"type": "string", "description": "Custom end date YYYY-MM-DD."},
                 "site": {"type": "string", "description": _SITE_DESCRIPTION},
+                "site_type": {"type": "string", "description": _SITE_TYPE_DESCRIPTION},
                 "employee_status": {"type": "string", "description": "Ask the user before calling: 'Active' (Activos), 'Terminated' (Cesantes), or 'all' (Todos). Do not default — always confirm."},
             },
             "required": ["supervisor_name"],
@@ -527,6 +610,8 @@ TOOLS = [
                 },
                 "start_date": {"type": "string", "description": "Custom start date YYYY-MM-DD."},
                 "end_date": {"type": "string", "description": "Custom end date YYYY-MM-DD."},
+                "site": {"type": "string", "description": _SITE_DESCRIPTION},
+                "site_type": {"type": "string", "description": _SITE_TYPE_DESCRIPTION},
                 "page": {"type": "integer", "default": 0, "description": "Page number (0-based)."},
                 "page_size": {"type": "integer", "default": 50, "description": "Rows per page (max 100)."},
             },
@@ -548,6 +633,7 @@ TOOLS = [
                     "description": "Optional partial name to filter supervisors (case-insensitive).",
                 },
                 "site": {"type": "string", "description": _SITE_DESCRIPTION},
+                "site_type": {"type": "string", "description": _SITE_TYPE_DESCRIPTION},
                 "employee_status": {"type": "string", "description": "Ask the user before calling: 'Active' (Activos), 'Terminated' (Cesantes), or 'all' (Todos). Do not default — always confirm."},
             },
         },
@@ -555,8 +641,8 @@ TOOLS = [
     {
         "name": "list_sites",
         "description": (
-            "Returns all unique sites/locations present in the system. "
-            "Use this to discover valid 'site' values before filtering other tools by location."
+            "Returns all unique sites/locations present in the system, including their type prefix (SC, FBM, XD, etc.). "
+            "Use this to discover valid 'site' or 'site_type' values before filtering other tools by location."
         ),
         "inputSchema": {
             "type": "object",
@@ -565,7 +651,49 @@ TOOLS = [
                     "type": "string",
                     "description": "Optional partial name to filter sites (case-insensitive).",
                 },
+                "site_type": {
+                    "type": "string",
+                    "description": "Optional filter by site type prefix (e.g., 'SC', 'FBM', 'XD').",
+                },
             },
+        },
+    },
+    {
+        "name": "get_extended_shifts_analysis",
+        "description": (
+            "Identifies employees with extended daily shifts (>12h30m) and weekly overtime accumulation (>13h). "
+            "Uses early-entry and late-out exceptions — regardless of their approval status — to determine actual "
+            "shift start and end times. Also detects employees with >2 violations in the same week, and flags "
+            "overtime records associated with double or triple overtime paycodes. "
+            "Always ask for employee_status first. Defaults to last 30 days if no date range is specified."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "supervisor_name": {
+                    "type": "string",
+                    "description": "Full name of the supervisor/team leader. Optional — can filter by site instead.",
+                },
+                "employee_status": {
+                    "type": "string",
+                    "description": (
+                        "REQUIRED before executing. Ask the user first: "
+                        "'Active' = Activos, 'Terminated' = Cesantes, 'all' = Todos. "
+                        "Do not default — always confirm with the user."
+                    ),
+                },
+                "period": {
+                    "type": "string",
+                    "description": "Quick date preset: current_month, last_month, last_7_days, last_30_days, last_90_days, last_6_months, last_12_months.",
+                },
+                "start_date": {"type": "string", "description": "Custom start date YYYY-MM-DD."},
+                "end_date": {"type": "string", "description": "Custom end date YYYY-MM-DD."},
+                "site": {"type": "string", "description": _SITE_DESCRIPTION},
+                "site_type": {"type": "string", "description": _SITE_TYPE_DESCRIPTION},
+                "page": {"type": "integer", "default": 0, "description": "Page number (0-based) for exception rows."},
+                "page_size": {"type": "integer", "default": 100, "description": "Rows per page for exception fetch (max 500)."},
+            },
+            "required": [],
         },
     },
 ]
@@ -573,8 +701,61 @@ TOOLS = [
 
 # ── Tool handlers ─────────────────────────────────────────────────────────────
 
-def base_string_filters(supervisor, site=None, status="Active"):
-    """Returns string_filters list with supervisor + optional site + employment status."""
+def handle_start_consultation(args):
+    try:
+        raw = call_celonis_tool("load_data", {
+            "columns": ["O_CUSTOM_EMPLOYEE.LOCACIONDESCRIPTION"],
+            "applied_filters": {
+                "null_filters": [{"column_id": "O_CUSTOM_EMPLOYEE.LOCACIONDESCRIPTION", "is_null": False}]
+            },
+            "page": 0,
+            "page_size": 500,
+        })
+        rows = extract_rows(raw)
+        seen = {}
+        for r in rows:
+            desc = r.get("O_CUSTOM_EMPLOYEE.LOCACIONDESCRIPTION")
+            if desc and desc not in seen:
+                seen[desc] = _extract_site_type(desc)
+        type_counts = {}
+        for stype in seen.values():
+            t = stype or "OTHER"
+            type_counts[t] = type_counts.get(t, 0) + 1
+        site_types = sorted(
+            [{"site_type": k, "count": v} for k, v in type_counts.items()],
+            key=lambda x: -x["count"],
+        )
+        total_sites = len(seen)
+    except Exception:
+        site_types = []
+        total_sites = 0
+
+    return {
+        "instruction_for_claude": (
+            "Guide the consultation in order:\n"
+            "PASO 1 — SCOPE: Ask '¿Querés filtrar por tipo de sitio, un sitio específico, o ver todos?' "
+            "Show available_site_types. Use answer as site_type (e.g. 'SC') or site in all subsequent calls.\n"
+            "PASO 2 — FOCO: Ask '¿Buscás un supervisor en particular, o preferís ver primero las excepciones pendientes?' "
+            "If supervisor → call list_supervisors with the site filter to pick one, then get_supervisor_dashboard. "
+            "If pending first → call get_pending_exceptions with the site filter.\n"
+            "PASO 3 — ESTADO: Ask '¿Activos, Cesantes o Todos?' "
+            "Use as employee_status in all subsequent calls.\n"
+            "Performance tip: always pass site_type or site to every tool call — it filters at source."
+        ),
+        "available_site_types": site_types,
+        "total_unique_sites": total_sites,
+        "suggested_workflow": [
+            "start_consultation → elegir scope (site_type / site / todos)",
+            "list_supervisors (con el site_type elegido) → elegir supervisor",
+            "get_supervisor_dashboard (supervisor + site_type + employee_status)",
+            "get_pending_exceptions → acciones inmediatas",
+            "get_absenteeism_kpis / get_punch_edits / etc. según necesidad",
+        ],
+    }
+
+
+def base_string_filters(supervisor, site=None, status="Active", site_type=None):
+    """Returns string_filters list with supervisor + optional site/site_type + employment status."""
     filters = [{
         "column_id": "O_CUSTOM_EMPLOYEE.SUPERVISORNAME",
         "values": [supervisor],
@@ -585,9 +766,12 @@ def base_string_filters(supervisor, site=None, status="Active"):
     sf = build_site_filter(site)
     if sf:
         filters.append(sf)
-    stf = build_status_filter(status)
+    stf = build_site_type_filter(site_type)
     if stf:
         filters.append(stf)
+    status_f = build_status_filter(status)
+    if status_f:
+        filters.append(status_f)
     return filters
 
 
@@ -600,6 +784,7 @@ def handle_compare_supervisors(args):
         return {"error": "At least 2 supervisor names are required."}
 
     site = args.get("site")
+    site_type = args.get("site_type")
     start_date, end_date, period_label = resolve_dates(args)
     sort_by = args.get("sort_by", "total_absences")
     date_f = build_date_filters(start_date, end_date, "O_CUSTOM_EXCEPTION.EVENTDATE")
@@ -620,7 +805,7 @@ def handle_compare_supervisors(args):
                     "total_empleados_con_al_menos_una_ausencia",
                 ],
                 "applied_filters": {
-                    "string_filters": base_string_filters(supervisor, site, status),
+                    "string_filters": base_string_filters(supervisor, site, status, site_type),
                     "date_filters": date_f,
                 },
             })
@@ -653,6 +838,7 @@ def handle_compare_supervisors(args):
         "_guidance": ANALYSIS_GUIDANCE,
         "employee_status_filter": status,
         "site_filter": site or None,
+        "site_type_filter": site_type or None,
         "period": period_label,
         "date_range": {"start": start_date, "end": end_date},
         "sorted_by": sort_by,
@@ -768,12 +954,13 @@ def handle_get_employee_absences(args):
 def handle_get_supervisor_dashboard(args):
     supervisor = args["supervisor_name"]
     site = args.get("site")
+    site_type = args.get("site_type")
     status = args.get("employee_status")
     if status is None:
         return clarification_for_status()
     start_date, end_date, period_label = resolve_dates(args)
 
-    sf = base_string_filters(supervisor, site, status)
+    sf = base_string_filters(supervisor, site, status, site_type)
     date_f = build_date_filters(start_date, end_date, "O_CUSTOM_EXCEPTION.EVENTDATE")
 
     def safe(fn, *a, **kw):
@@ -867,6 +1054,7 @@ def handle_get_supervisor_dashboard(args):
         "supervisor": supervisor,
         "_guidance": ANALYSIS_GUIDANCE,
         "site_filter": site or None,
+        "site_type_filter": site_type or None,
         "employee_status_filter": status if status.lower() != "all" else "all",
         "period": period_label,
         "date_range": {"start": start_date, "end": end_date},
@@ -881,6 +1069,7 @@ def handle_get_supervisor_dashboard(args):
 def handle_get_exceptions_without_paycode(args):
     supervisor = args["supervisor_name"]
     site = args.get("site")
+    site_type = args.get("site_type")
     status = args.get("employee_status")
     if status is None:
         return clarification_for_status()
@@ -889,7 +1078,7 @@ def handle_get_exceptions_without_paycode(args):
     start_date, end_date, period_label = resolve_dates(args)
 
     filters = {
-        "string_filters": base_string_filters(supervisor, site, status),
+        "string_filters": base_string_filters(supervisor, site, status, site_type),
         "null_filters": [
             {"column_id": "O_CUSTOM_EXCEPTION.PAYCODEQUALIFIER", "is_null": True}
         ],
@@ -923,6 +1112,7 @@ def handle_get_exceptions_without_paycode(args):
         "period": period_label,
         "date_range": {"start": start_date, "end": end_date},
         "site_filter": site or None,
+        "site_type_filter": site_type or None,
         "total_exceptions_without_paycode": total,
         "page": page,
         "page_size": page_size,
@@ -944,11 +1134,11 @@ def handle_get_exceptions_without_paycode(args):
 def handle_get_absenteeism_kpis(args):
     supervisor = args["supervisor_name"]
     site = args.get("site")
+    site_type = args.get("site_type")
     status = args.get("employee_status")
     if status is None:
-        return clarification_for_status()  # None means not explicitly provided
+        return clarification_for_status()
 
-    # Ask for clarification before executing if status not specified
     if status is None:
         return {
             "clarification_needed": True,
@@ -969,7 +1159,7 @@ def handle_get_absenteeism_kpis(args):
     start_date, end_date, period_label = resolve_dates(args)
 
     filters = {
-        "string_filters": base_string_filters(supervisor, site, status),
+        "string_filters": base_string_filters(supervisor, site, status, site_type),
         "date_filters": build_date_filters(start_date, end_date, "O_CUSTOM_EXCEPTION.EVENTDATE"),
     }
 
@@ -993,31 +1183,33 @@ def handle_get_absenteeism_kpis(args):
     rows = extract_rows(raw)
     kpis = rows[0] if rows else {}
 
+    def pct(val):
+        return round((val or 0) * 100, 1)
+
     return {
         "supervisor": supervisor,
-        "_guidance": ANALYSIS_GUIDANCE,
-        "site_filter": site or None,
-        "employee_status_filter": status if status.lower() != "all" else "all",
         "period": period_label,
         "date_range": {"start": start_date, "end": end_date},
-        "kpis": {
-            "total_absences": kpis.get("total_de_ausencias"),
-            "unjustified_absences": kpis.get("total_de_ausencias_injustificadas"),
-            "justified_absences": kpis.get("total_de_ausencias_justitificas"),
-            "pct_justified_raw": kpis.get("de_ausencias_justificadas"),
-            "employees_with_3plus_unjustified": kpis.get("empleados_con_3_ausencias_injustificadas"),
-            "pct_employees_with_3plus_unjustified_raw": kpis.get("percentage_empleados_con_3_ausencias_injustificadas"),
-            "pct_employees_with_at_least_1_unjustified_raw": kpis.get("de_empleados_con_al_menos_1_ausencia_injustificada"),
-            "employees_with_at_least_1_absence": kpis.get("total_empleados_con_al_menos_una_ausencia"),
-            "employees_critical_absenteeism_10pct": kpis.get("empleados_con_ausentismo_cr_tico_10_"),
-            "pct_employees_critical_absenteeism_raw": kpis.get("de_empleados_con_ausentismo_cr_tico"),
-        },
+        "employee_status": status if status.lower() != "all" else "all",
+        "site_filter": site or None,
+        "site_type_filter": site_type or None,
+        "total_absences": kpis.get("total_de_ausencias"),
+        "unjustified": kpis.get("total_de_ausencias_injustificadas"),
+        "justified": kpis.get("total_de_ausencias_justitificas"),
+        "pct_justified": pct(kpis.get("de_ausencias_justificadas")),
+        "employees_with_3plus_unjustified": kpis.get("empleados_con_3_ausencias_injustificadas"),
+        "pct_employees_3plus_unjustified": pct(kpis.get("percentage_empleados_con_3_ausencias_injustificadas")),
+        "pct_employees_at_least_1_unjustified": pct(kpis.get("de_empleados_con_al_menos_1_ausencia_injustificada")),
+        "employees_with_any_absence": kpis.get("total_empleados_con_al_menos_una_ausencia"),
+        "employees_critical_10pct": kpis.get("empleados_con_ausentismo_cr_tico_10_"),
+        "pct_employees_critical": pct(kpis.get("de_empleados_con_ausentismo_cr_tico")),
     }
 
 
 def handle_get_punch_edits(args):
     supervisor = args["supervisor_name"]
     site = args.get("site")
+    site_type = args.get("site_type")
     status = args.get("employee_status")
     if status is None:
         return clarification_for_status()
@@ -1032,7 +1224,7 @@ def handle_get_punch_edits(args):
             "percentage_timecards_con_marcaje_editado_manualmente",
             "marcajes_editados_manualmente",
         ],
-        "applied_filters": {"string_filters": base_string_filters(supervisor, site, status)},
+        "applied_filters": {"string_filters": base_string_filters(supervisor, site, status, site_type)},
     }
     raw_kpi = call_celonis_tool("load_data", kpi_args)
     kpi_rows = extract_rows(raw_kpi)
@@ -1046,6 +1238,7 @@ def handle_get_punch_edits(args):
         "period": period_label,
         "date_range": {"start": start_date, "end": end_date},
         "site_filter": site or None,
+        "site_type_filter": site_type or None,
         "note": "KPIs cover the full history for this supervisor. Date range applies to detail rows only.",
         "kpis": {
             "manual_punch_edits": kpis.get("ediciones_manuales_de_marcaje"),
@@ -1063,6 +1256,7 @@ def handle_get_punch_edits(args):
 def handle_get_paycode_corrections(args):
     supervisor = args["supervisor_name"]
     site = args.get("site")
+    site_type = args.get("site_type")
     status = args.get("employee_status")
     if status is None:
         return clarification_for_status()
@@ -1080,7 +1274,7 @@ def handle_get_paycode_corrections(args):
             "percentage_timecards_con_correcciones_de_paycode",
             "percentage_correcciones_de_paycode",
         ],
-        "applied_filters": {"string_filters": base_string_filters(supervisor, site, status)},
+        "applied_filters": {"string_filters": base_string_filters(supervisor, site, status, site_type)},
     })
     kpis = (extract_rows(raw_kpi) or [{}])[0]
 
@@ -1088,6 +1282,7 @@ def handle_get_paycode_corrections(args):
         "supervisor": supervisor,
         "_guidance": ANALYSIS_GUIDANCE,
         "site_filter": site or None,
+        "site_type_filter": site_type or None,
         "employee_status_filter": status if status.lower() != "all" else "all",
         "period": period_label,
         "date_range": {"start": start_date, "end": end_date},
@@ -1159,6 +1354,7 @@ def handle_get_employee_detail(args):
 def handle_get_overtime_summary(args):
     supervisor = args["supervisor_name"]
     site = args.get("site")
+    site_type = args.get("site_type")
     status = args.get("employee_status")
     if status is None:
         return clarification_for_status()
@@ -1173,7 +1369,7 @@ def handle_get_overtime_summary(args):
             "O_CUSTOM_EMPLOYEE.LDAP",
             "O_CUSTOM_EXCEPTION.EMPLOYEEID",
         ],
-        "applied_filters": {"string_filters": base_string_filters(supervisor, site, status)},
+        "applied_filters": {"string_filters": base_string_filters(supervisor, site, status, site_type)},
         "page": 0,
         "page_size": 500,
     })
@@ -1249,6 +1445,7 @@ def handle_get_overtime_summary(args):
         "period": period_label,
         "date_range": {"start": start_date, "end": end_date},
         "site_filter": site or None,
+        "site_type_filter": site_type or None,
         "total_records": total,
         "page": page,
         "page_size": page_size,
@@ -1278,10 +1475,12 @@ def handle_get_overtime_summary(args):
 def handle_get_incomplete_shifts_kpis(args):
     supervisor = args["supervisor_name"]
     site = args.get("site")
+    site_type = args.get("site_type")
+    status = args.get("employee_status")
     start_date, end_date, period_label = resolve_dates(args)
 
     filters = {
-        "string_filters": base_string_filters(supervisor, site),
+        "string_filters": base_string_filters(supervisor, site, status or "Active", site_type),
         "date_filters": build_date_filters(start_date, end_date, "O_CUSTOM_EXCEPTION.EVENTDATE"),
     }
 
@@ -1311,6 +1510,7 @@ def handle_get_incomplete_shifts_kpis(args):
         "period": period_label,
         "date_range": {"start": start_date, "end": end_date},
         "site_filter": site or None,
+        "site_type_filter": site_type or None,
         "note": "All values are percentages of total incomplete shifts in the period.",
         "kpis": {
             "pct_pending":                    pct(kpis.get("jornadas_pendientes")),
@@ -1328,6 +1528,7 @@ def handle_get_incomplete_shifts_kpis(args):
 def handle_get_pending_exceptions(args):
     supervisor = args["supervisor_name"]
     site = args.get("site")
+    site_type = args.get("site_type")
     status = args.get("employee_status")
     if status is None:
         return clarification_for_status()
@@ -1336,7 +1537,7 @@ def handle_get_pending_exceptions(args):
     start_date, end_date, period_label = resolve_dates(args)
 
     filters = {
-        "string_filters": base_string_filters(supervisor, site, status) + [
+        "string_filters": base_string_filters(supervisor, site, status, site_type) + [
             {
                 "column_id": "O_CUSTOM_EXCEPTION.exception_status",
                 "values": ["Pendiente"],
@@ -1381,6 +1582,7 @@ def handle_get_pending_exceptions(args):
         "period": period_label,
         "date_range": {"start": start_date, "end": end_date},
         "site_filter": site or None,
+        "site_type_filter": site_type or None,
         "total_pending": total,
         "page": page,
         "page_size": page_size,
@@ -1407,6 +1609,7 @@ def handle_get_pending_exceptions(args):
 def handle_list_supervisors(args):
     search = args.get("search", "").strip()
     site = args.get("site")
+    site_type = args.get("site_type")
     status = args.get("employee_status")
     if status is None:
         return clarification_for_status()
@@ -1428,9 +1631,12 @@ def handle_list_supervisors(args):
     sf = build_site_filter(site)
     if sf:
         string_filters.append(sf)
-    stf = build_status_filter(status)
+    stf = build_site_type_filter(site_type)
     if stf:
         string_filters.append(stf)
+    status_f = build_status_filter(status)
+    if status_f:
+        string_filters.append(status_f)
     if string_filters:
         filters["string_filters"] = string_filters
 
@@ -1463,28 +1669,43 @@ def handle_list_supervisors(args):
         "total": len(supervisors),
         "search_filter": search or None,
         "site_filter": site or None,
+        "site_type_filter": site_type or None,
         "employee_status_filter": status if status.lower() != "all" else "all",
         "note": "Results based on a sample of recent exception records. Use 'search' to find a specific supervisor." if not (search or site) else None,
         "supervisors": supervisors,
     }
 
 
+def _extract_site_type(description):
+    """Extracts type prefix from 'SC - Guadalajara SGD1' → 'SC'. Returns None if no ' - ' pattern."""
+    if description and " - " in description:
+        return description.split(" - ")[0].strip()
+    return None
+
+
 def handle_list_sites(args):
     search = args.get("search", "").strip()
+    site_type = args.get("site_type", "").strip()
 
     filters = {
         "null_filters": [
             {"column_id": "O_CUSTOM_EMPLOYEE.LOCACIONDESCRIPTION", "is_null": False}
         ]
     }
+    string_filters = []
     if search:
-        filters["string_filters"] = [{
+        string_filters.append({
             "column_id": "O_CUSTOM_EMPLOYEE.LOCACIONDESCRIPTION",
             "values": [search],
             "add_wildcard_before": True,
             "add_wildcard_after": True,
             "case_sensitive": False,
-        }]
+        })
+    stf = build_site_type_filter(site_type)
+    if stf:
+        string_filters.append(stf)
+    if string_filters:
+        filters["string_filters"] = string_filters
 
     raw = call_celonis_tool("load_data", {
         "columns": [
@@ -1505,6 +1726,7 @@ def handle_list_sites(args):
         desc = r.get("O_CUSTOM_EMPLOYEE.LOCACIONDESCRIPTION")
         if desc and desc not in seen:
             seen[desc] = {
+                "site_type": _extract_site_type(desc),
                 "location_code": r.get("O_CUSTOM_EMPLOYEE.LOCACION"),
                 "society": r.get("O_CUSTOM_EMPLOYEE.SOCIEDAD"),
                 "country": r.get("O_CUSTOM_EMPLOYEE.pais"),
@@ -1512,18 +1734,352 @@ def handle_list_sites(args):
 
     sites = sorted(
         [{"description": d, **v} for d, v in seen.items()],
-        key=lambda x: x["description"],
+        key=lambda x: (x["site_type"] or "", x["description"]),
     )
+
+    # Summary count by type
+    type_counts = {}
+    for s in sites:
+        t = s["site_type"] or "OTHER"
+        type_counts[t] = type_counts.get(t, 0) + 1
+
     return {
         "total": len(sites),
         "search_filter": search or None,
+        "site_type_filter": site_type or None,
+        "summary_by_type": sorted(
+            [{"site_type": k, "count": v} for k, v in type_counts.items()],
+            key=lambda x: -x["count"],
+        ),
         "sites": sites,
+    }
+
+
+def handle_get_extended_shifts_analysis(args):
+    supervisor = (args.get("supervisor_name") or "").strip() or None
+    site = args.get("site")
+    site_type = args.get("site_type")
+    status = args.get("employee_status")
+    if status is None:
+        return clarification_for_status()
+
+    start_date, end_date, period_label = resolve_dates(args)
+    page = args.get("page", 0)
+    page_size = min(int(args.get("page_size", 100)), 500)
+
+    DAILY_THRESHOLD_HOURS = 12.5   # 12h work + 30min site transit tolerance
+    WEEKLY_OT_THRESHOLD_HOURS = 13.0
+
+    # ── Step 1: Resolve employees under this supervisor/site/status ───────────
+    base_sf = []
+    if supervisor:
+        base_sf.append({
+            "column_id": "O_CUSTOM_EMPLOYEE.SUPERVISORNAME",
+            "values": [supervisor],
+            "add_wildcard_before": False,
+            "add_wildcard_after": False,
+            "case_sensitive": False,
+        })
+    sf = build_site_filter(site)
+    if sf:
+        base_sf.append(sf)
+    stf = build_site_type_filter(site_type)
+    if stf:
+        base_sf.append(stf)
+    status_f = build_status_filter(status)
+    if status_f:
+        base_sf.append(status_f)
+
+    emp_raw = call_celonis_tool("load_data", {
+        "columns": [
+            "O_CUSTOM_EMPLOYEE.FULLNAME",
+            "O_CUSTOM_EMPLOYEE.LDAP",
+            "O_CUSTOM_EXCEPTION.EMPLOYEEID",
+        ],
+        "applied_filters": {"string_filters": base_sf} if base_sf else {},
+        "page": 0,
+        "page_size": 500,
+    })
+    emp_rows = extract_rows(emp_raw)
+
+    emp_lookup = {}
+    for r in emp_rows:
+        eid = r.get("O_CUSTOM_EXCEPTION.EMPLOYEEID")
+        if eid and eid not in emp_lookup:
+            emp_lookup[eid] = {
+                "name": r.get("O_CUSTOM_EMPLOYEE.FULLNAME"),
+                "ldap": r.get("O_CUSTOM_EMPLOYEE.LDAP"),
+            }
+
+    if not emp_lookup:
+        return {
+            "supervisor": supervisor,
+            "site_filter": site or None,
+            "period": period_label,
+            "date_range": {"start": start_date, "end": end_date},
+            "error": "No employees found for the given filters.",
+        }
+
+    emp_ids = list(emp_lookup.keys())
+    date_f_exc = build_date_filters(start_date, end_date, "O_CUSTOM_EXCEPTION.EVENTDATE")
+
+    # ── Step 2: Fetch early-entry + late-out exceptions (all statuses) ────────
+    EARLY_KW = {"early", "temprana", "anticipada"}
+    LATE_KW = {"late", "tarde", "tardia", "tardía", "salida tard"}
+
+    def exc_is_early(type_name):
+        lower = (type_name or "").lower()
+        return any(k in lower for k in EARLY_KW)
+
+    def exc_is_late(type_name):
+        lower = (type_name or "").lower()
+        return any(k in lower for k in LATE_KW)
+
+    exc_raw = call_celonis_tool("load_data", {
+        "columns": [
+            "O_CUSTOM_EXCEPTION.EMPLOYEEID",
+            "O_CUSTOM_EXCEPTION.EXCEPTIONTYPENAME",
+            "O_CUSTOM_EXCEPTION.exception_status",
+            "O_CUSTOM_EXCEPTION.EVENTDATE",
+            "O_CUSTOM_EXCEPTION.STARTDATETIME",
+            "O_CUSTOM_EXCEPTION.ENDDATETIME",
+            "O_CUSTOM_EXCEPTION.PAYCODEQUALIFIER",
+        ],
+        "applied_filters": {
+            "string_filters": [
+                {
+                    "column_id": "O_CUSTOM_EXCEPTION.EMPLOYEEID",
+                    "values": emp_ids,
+                    "add_wildcard_before": False,
+                    "add_wildcard_after": False,
+                    "case_sensitive": False,
+                },
+            ],
+            "date_filters": date_f_exc,
+        },
+        "page": page,
+        "page_size": page_size,
+    })
+    exc_rows = extract_rows(exc_raw)
+
+    # Group by (emp_id, eventdate) to reconstruct shift window per day
+    shift_map = {}  # (emp_id, date_str) -> {earliest_start, latest_end, early_excs, late_excs}
+
+    for r in exc_rows:
+        type_name = r.get("O_CUSTOM_EXCEPTION.EXCEPTIONTYPENAME") or ""
+        is_early = exc_is_early(type_name)
+        is_late = exc_is_late(type_name)
+        if not is_early and not is_late:
+            continue
+
+        emp_id = r.get("O_CUSTOM_EXCEPTION.EMPLOYEEID")
+        event_date = r.get("O_CUSTOM_EXCEPTION.EVENTDATE")
+        if not emp_id or not event_date:
+            continue
+
+        start_dt = parse_dt(r.get("O_CUSTOM_EXCEPTION.STARTDATETIME"))
+        end_dt = parse_dt(r.get("O_CUSTOM_EXCEPTION.ENDDATETIME"))
+        date_str = str(event_date)[:10]
+        key = (emp_id, date_str)
+
+        if key not in shift_map:
+            shift_map[key] = {
+                "earliest_start": None,
+                "latest_end": None,
+                "early_excs": [],
+                "late_excs": [],
+            }
+
+        entry = shift_map[key]
+
+        if is_early and start_dt:
+            if entry["earliest_start"] is None or start_dt < entry["earliest_start"]:
+                entry["earliest_start"] = start_dt
+            entry["early_excs"].append({
+                "type": type_name,
+                "status": r.get("O_CUSTOM_EXCEPTION.exception_status"),
+                "start": r.get("O_CUSTOM_EXCEPTION.STARTDATETIME"),
+                "paycode": r.get("O_CUSTOM_EXCEPTION.PAYCODEQUALIFIER"),
+            })
+
+        if is_late and end_dt:
+            if entry["latest_end"] is None or end_dt > entry["latest_end"]:
+                entry["latest_end"] = end_dt
+            entry["late_excs"].append({
+                "type": type_name,
+                "status": r.get("O_CUSTOM_EXCEPTION.exception_status"),
+                "end": r.get("O_CUSTOM_EXCEPTION.ENDDATETIME"),
+                "paycode": r.get("O_CUSTOM_EXCEPTION.PAYCODEQUALIFIER"),
+            })
+
+    # Identify daily violations: shift window > 12h30m
+    daily_violations = []
+    for (emp_id, date_str), entry in shift_map.items():
+        s = entry["earliest_start"]
+        e = entry["latest_end"]
+        if not s or not e:
+            continue
+        duration_secs = (e - s).total_seconds()
+        if duration_secs <= 0:
+            continue
+        duration_hours = round(duration_secs / 3600, 2)
+        if duration_hours > DAILY_THRESHOLD_HOURS:
+            emp_info = emp_lookup.get(emp_id, {})
+            daily_violations.append({
+                "employee_id": emp_id,
+                "employee": emp_info.get("name"),
+                "ldap": emp_info.get("ldap"),
+                "date": date_str,
+                "shift_start": s.strftime("%Y-%m-%dT%H:%M:%S"),
+                "shift_end": e.strftime("%Y-%m-%dT%H:%M:%S"),
+                "duration_hours": duration_hours,
+                "early_entry_exceptions": entry["early_excs"],
+                "late_out_exceptions": entry["late_excs"],
+            })
+
+    # ── Step 3: Weekly overtime from O_CUSTOM_OVERTIMEAPPROVAL ───────────────
+    ot_raw = call_celonis_tool("load_data", {
+        "columns": [
+            "O_CUSTOM_OVERTIMEAPPROVAL.EMPLOYEEID",
+            "O_CUSTOM_OVERTIMEAPPROVAL.ACTION",
+            "O_CUSTOM_OVERTIMEAPPROVAL.AMOUNT",
+            "O_CUSTOM_OVERTIMEAPPROVAL.APPLYDATE",
+            "O_CUSTOM_OVERTIMEAPPROVAL.PAYCODEQUALIFIER",
+            "O_CUSTOM_OVERTIMEAPPROVAL.REVIEWERNAME",
+        ],
+        "applied_filters": {
+            "string_filters": [
+                {
+                    "column_id": "O_CUSTOM_OVERTIMEAPPROVAL.EMPLOYEEID",
+                    "values": emp_ids,
+                    "add_wildcard_before": False,
+                    "add_wildcard_after": False,
+                    "case_sensitive": False,
+                }
+            ],
+            "date_filters": build_date_filters(start_date, end_date, "O_CUSTOM_OVERTIMEAPPROVAL.APPLYDATE"),
+        },
+        "page": 0,
+        "page_size": page_size,
+    })
+    ot_rows = extract_rows(ot_raw)
+
+    def classify_paycode(action, paycode):
+        combined = ((action or "") + " " + (paycode or "")).lower()
+        if any(k in combined for k in ["triple", "3x", "3 x"]):
+            return "triple_overtime"
+        if any(k in combined for k in ["double", "doble", "2x", "2 x"]):
+            return "double_overtime"
+        return None
+
+    weekly_ot = {}  # (emp_id, week_str) -> {total_hours, records}
+    for r in ot_rows:
+        emp_id = r.get("O_CUSTOM_OVERTIMEAPPROVAL.EMPLOYEEID")
+        apply_date = r.get("O_CUSTOM_OVERTIMEAPPROVAL.APPLYDATE")
+        amount_secs = r.get("O_CUSTOM_OVERTIMEAPPROVAL.AMOUNT") or 0
+        week = get_iso_week(apply_date)
+        if not emp_id or not week:
+            continue
+
+        key = (emp_id, week)
+        if key not in weekly_ot:
+            weekly_ot[key] = {"total_hours": 0.0, "records": []}
+
+        hours = round(amount_secs / 3600, 2)
+        weekly_ot[key]["total_hours"] = round(weekly_ot[key]["total_hours"] + hours, 2)
+
+        paycode = r.get("O_CUSTOM_OVERTIMEAPPROVAL.PAYCODEQUALIFIER")
+        action = r.get("O_CUSTOM_OVERTIMEAPPROVAL.ACTION")
+        weekly_ot[key]["records"].append({
+            "date": str(apply_date)[:10],
+            "hours": hours,
+            "action": action,
+            "paycode": paycode or None,
+            "overtime_category": classify_paycode(action, paycode),
+            "reviewer": r.get("O_CUSTOM_OVERTIMEAPPROVAL.REVIEWERNAME"),
+        })
+
+    weekly_violations = []
+    for (emp_id, week), data in weekly_ot.items():
+        if data["total_hours"] > WEEKLY_OT_THRESHOLD_HOURS:
+            emp_info = emp_lookup.get(emp_id, {})
+            special = sorted({r["overtime_category"] for r in data["records"] if r["overtime_category"]})
+            weekly_violations.append({
+                "employee_id": emp_id,
+                "employee": emp_info.get("name"),
+                "ldap": emp_info.get("ldap"),
+                "week": week,
+                "total_overtime_hours": data["total_hours"],
+                "overtime_categories": special if special else None,
+                "records": data["records"],
+            })
+
+    # ── Step 4: Repeat offenders (> 2 daily violations in the same week) ─────
+    viol_by_emp_week = {}
+    for v in daily_violations:
+        week = get_iso_week(v["date"])
+        if not week:
+            continue
+        key = (v["employee_id"], week)
+        viol_by_emp_week.setdefault(key, []).append(v["date"])
+
+    repeat_offenders = [
+        {
+            "employee_id": emp_id,
+            "employee": emp_lookup.get(emp_id, {}).get("name"),
+            "ldap": emp_lookup.get(emp_id, {}).get("ldap"),
+            "week": week,
+            "violation_days_count": len(dates),
+            "dates": sorted(dates),
+        }
+        for (emp_id, week), dates in viol_by_emp_week.items()
+        if len(dates) > 2
+    ]
+
+    return {
+        "_guidance": ANALYSIS_GUIDANCE,
+        "supervisor": supervisor,
+        "site_filter": site or None,
+        "site_type_filter": site_type or None,
+        "employee_status_filter": status,
+        "period": period_label,
+        "date_range": {"start": start_date, "end": end_date},
+        "thresholds": {
+            "daily_max_hours": DAILY_THRESHOLD_HOURS,
+            "daily_tolerance_note": "30min tolerance for site entry/exit included (flags shifts > 12h actual work)",
+            "weekly_overtime_max_hours": WEEKLY_OT_THRESHOLD_HOURS,
+        },
+        "summary": {
+            "employees_scanned": len(emp_lookup),
+            "total_daily_violations": len(daily_violations),
+            "affected_employees_daily": len({v["employee_id"] for v in daily_violations}),
+            "weeks_over_13h_overtime": len(weekly_violations),
+            "employees_with_3plus_days_per_week": len(repeat_offenders),
+            "exception_rows_analyzed": len(exc_rows),
+        },
+        "daily_violations": sorted(
+            daily_violations, key=lambda x: (x.get("employee") or "", x["date"])
+        ),
+        "weekly_overtime_violations": sorted(
+            weekly_violations, key=lambda x: -x["total_overtime_hours"]
+        ),
+        "repeat_offenders_by_week": sorted(
+            repeat_offenders, key=lambda x: -x["violation_days_count"]
+        ),
+        "methodology": (
+            "daily_violations: earliest early-entry STARTDATETIME to latest late-out ENDDATETIME "
+            "per employee per day (all exception statuses included). "
+            "weekly_overtime_violations: sum of O_CUSTOM_OVERTIMEAPPROVAL.AMOUNT per employee "
+            "per ISO calendar week. "
+            "repeat_offenders_by_week: employees with >2 daily violation days in the same week."
+        ),
     }
 
 
 # ── MCP protocol ──────────────────────────────────────────────────────────────
 
 HANDLERS = {
+    "start_consultation":        handle_start_consultation,
     "compare_supervisors":      handle_compare_supervisors,
     "get_employee_absences":    handle_get_employee_absences,
     "get_supervisor_dashboard": handle_get_supervisor_dashboard,
@@ -1537,6 +2093,7 @@ HANDLERS = {
     "get_pending_exceptions": handle_get_pending_exceptions,
     "get_punch_edits": handle_get_punch_edits,
     "list_supervisors": handle_list_supervisors,
+    "get_extended_shifts_analysis": handle_get_extended_shifts_analysis,
 }
 
 
@@ -1562,7 +2119,7 @@ def handle_request(req):
         respond(req_id, {
             "protocolVersion": "2024-11-05",
             "capabilities": {"tools": {}},
-            "serverInfo": {"name": "celonis-novedades", "version": "1.1.0"},
+            "serverInfo": {"name": "celonis-novedades", "version": "1.2.0"},
         })
     elif method == "notifications/initialized":
         pass
