@@ -1001,34 +1001,6 @@ def handle_get_supervisor_dashboard(args):
             "pct_no_action_required": pct(k.get("sin_gesti_n_requerida")),
         }
 
-    # ── Punch edits ───────────────────────────────────────────────────────────
-    def get_punches():
-        raw = call_celonis_tool("load_data", {
-            "columns": ["ediciones_manuales_de_marcaje", "marcajes_editados_manualmente", "timecards_con_marcaje_editado_manualmente"],
-            "applied_filters": {"string_filters": sf},
-        })
-        k = (extract_rows(raw) or [{}])[0]
-        pct = lambda v: round((v or 0) * 100, 1)
-        return {
-            "manual_edits": k.get("ediciones_manuales_de_marcaje"),
-            "pct_edited_punches": pct(k.get("marcajes_editados_manualmente")),
-            "timecards_affected": k.get("timecards_con_marcaje_editado_manualmente"),
-        }
-
-    # ── Paycode corrections ───────────────────────────────────────────────────
-    def get_paycodes():
-        raw = call_celonis_tool("load_data", {
-            "columns": ["correcciones_de_paycode", "timecards_con_correcciones_de_paycode", "percentage_timecards_con_correcciones_de_paycode"],
-            "applied_filters": {"string_filters": sf},
-        })
-        k = (extract_rows(raw) or [{}])[0]
-        pct = lambda v: round((v or 0) * 100, 1)
-        return {
-            "corrections": k.get("correcciones_de_paycode"),
-            "timecards_affected": k.get("timecards_con_correcciones_de_paycode"),
-            "pct_timecards_with_corrections": pct(k.get("percentage_timecards_con_correcciones_de_paycode")),
-        }
-
     # ── Pending exceptions count ──────────────────────────────────────────────
     def get_pending_count():
         raw = call_celonis_tool("load_data", {
@@ -1044,11 +1016,9 @@ def handle_get_supervisor_dashboard(args):
         return {"pending_exceptions": total}
 
     # ── Run all in sequence (Celonis doesn't support parallel calls) ──────────
-    absenteeism    = safe(get_absenteeism)
-    shifts         = safe(get_shifts)
-    punch_edits    = safe(get_punches)
-    paycode_corr   = safe(get_paycodes)
-    pending        = safe(get_pending_count)
+    absenteeism = safe(get_absenteeism)
+    shifts      = safe(get_shifts)
+    pending     = safe(get_pending_count)
 
     return {
         "supervisor": supervisor,
@@ -1060,8 +1030,6 @@ def handle_get_supervisor_dashboard(args):
         "date_range": {"start": start_date, "end": end_date},
         "absenteeism": absenteeism,
         "incomplete_shifts": shifts,
-        "punch_edits": punch_edits,
-        "paycode_corrections": paycode_corr,
         "pending_exceptions": pending,
     }
 
